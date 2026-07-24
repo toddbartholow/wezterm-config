@@ -263,9 +263,9 @@ e.set_right_status = function(Config, window, pane)
 
   local time_ico = str.padl(icon.Clock[timefmt "%I"])
   local time_cells = {
-    timefmt "%a %b %-d %H:%M" .. time_ico,
-    timefmt "%d/%m %R" .. time_ico,
-    timefmt "%R" .. time_ico,
+    timefmt "%a %b %-d %I:%M %p" .. time_ico,
+    timefmt "%d/%m %I:%M %p" .. time_ico,
+    timefmt "%I:%M %p" .. time_ico,
     time_ico,
   } --~ }}}
 

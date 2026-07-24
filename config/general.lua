@@ -31,22 +31,33 @@ if fs.platform().is_win then
   -- ref: https://wezfurlong.org/wezterm/config/lua/WslDomain.html
   Config.wsl_domains = {
     {
-      name = "WSL:Ubuntu",
-      distribution = "Ubuntu",
-      username = "sravioli",
+      name = "WSL:Ubuntu-24.04",
+      distribution = "Ubuntu-24.04",
       default_cwd = "~",
       default_prog = { "bash", "-i", "-l" },
     },
     {
-      name = "WSL:Alpine",
-      distribution = "Alpine",
-      username = "sravioli",
-      default_cwd = "/home/sravioli",
+      name = "WSL:Ubuntu-20.04",
+      distribution = "Ubuntu-20.04",
+      default_cwd = "~",
+      default_prog = { "bash", "-i", "-l" },
+    },
+    {
+      name = "WSL:OracleLinux_9_1",
+      distribution = "OracleLinux_9_1",
+      default_cwd = "~",
+      default_prog = { "bash", "-i", "-l" },
     },
   }
 end
 
 Config.default_cwd = fs.home()
+
+---generous scrollback for long-running tools (e.g. Claude Code output)
+Config.scrollback_lines = 15000
+
+---smoother streaming output on a discrete GPU
+Config.max_fps = 120
 
 -- ref: https://wezfurlong.org/wezterm/config/lua/SshDomain.html
 Config.ssh_domains = {}
