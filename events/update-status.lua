@@ -19,6 +19,76 @@ local fs, mt, str, tbl = fn.fs, fn.mt, fn.str, fn.tbl
 ---@class UpdateStatusEvent
 local e = {}
 
+---Agent CLIs (Claude Code, Codex) animate their pane title several times a second, and
+---every title change in any tab emits `update-status` on wezterm's GUI thread. Anything
+---slow in here therefore runs at that rate, so the expensive inputs are cached. The
+---caches live in this lua state, which wezterm replaces on every config reload.
+local cache = { config = {}, battery = { at = -math.huge }, best_fit = {}, pane = {} }
+
+---seconds between `wezterm.battery_info()` calls, which enumerate devices on Windows
+local BATTERY_TTL = 60
+
+---seconds to reuse per-pane values that come from `pane:get_current_working_dir()` and
+---`pane:get_foreground_process_name()`. Both bypass wezterm's process info cache and, on
+---Windows, snapshot every process and read the pane's process tree (~20ms per call).
+local PANE_TTL = 1
+
+-- {{{1 e.__per_pane(pane, what, compute)
+
+---Returns `compute()` for `pane`, reusing the previous result for `PANE_TTL` seconds.
+---
+---@param pane wt.Pane Wezterm's pane object
+---@param what string name of the cached value
+---@param compute function produces the value
+---@return any value
+e.__per_pane = function(pane, what, compute)
+  local now, key = os.time(), pane:pane_id() .. "\31" .. what
+  local hit = cache.pane[key]
+  if hit and now - hit.at < PANE_TTL then
+    return hit.value
+  end
+
+  local value = compute()
+  cache.pane[key] = { at = now, value = value }
+  return value
+end -- }}}
+
+-- {{{1 e.__effective_config(window)
+
+---Returns `window:effective_config()`, which marshals the whole config into lua, reusing
+---the previous result while the window's config overrides are unchanged.
+---
+---@param window wt.Window Wezterm's window object
+---@return table config effective config
+---@return table overrides config overrides
+e.__effective_config = function(window)
+  local overrides = window:get_config_overrides() or {}
+  local ok, key = pcall(wt.json_encode, overrides)
+  local id = window:window_id()
+
+  local hit = cache.config[id]
+  if ok and hit and hit.key == key then
+    return hit.config, overrides
+  end
+
+  local config = window:effective_config()
+  cache.config[id] = ok and { key = key, config = config } or nil
+  return config, overrides
+end -- }}}
+
+-- {{{1 e.__battery_info()
+
+---Returns the first battery, refreshed at most every `BATTERY_TTL` seconds.
+---
+---@return table|nil battery
+e.__battery_info = function()
+  local now = os.time()
+  if now - cache.battery.at >= BATTERY_TTL then
+    cache.battery = { at = now, info = wt.battery_info()[1] }
+  end
+  return cache.battery.info
+end -- }}}
+
 -- {{{1 e.__get_modes()
 
 ---Retrieves a table of available modes, each represented by a set of properties.
@@ -220,11 +290,11 @@ end -- }}}
 ---@param pane wt.Pane Wezterm's pane object
 ---@return number usable_width remaining usable width
 e.update_width = function(Config, window, pane)
-  for _ = 1, #window:mux_window():tabs() do
-    local tab_title = pane:get_title()
-    e.width.tabs = e.width.tabs
-      + str.width(str.format_tab_title(pane, tab_title, Config, 25))
-  end
+  ---every tab is measured with the active pane's title, so format it once
+  local tab_width = e.__per_pane(pane, "tab_width", function()
+    return str.width(str.format_tab_title(pane, pane:get_title(), Config, 25))
+  end)
+  e.width.tabs = e.width.tabs + tab_width * #window:mux_window():tabs()
 
   return e.width.usable - (e.width.tabs + e.width.mode + e.width.new_button + e.width.ws)
 end -- }}}
@@ -245,11 +315,13 @@ e.set_right_status = function(Config, window, pane)
 
   e.fg = color_parse(tostring(e.fg))
   local palette = { e.fg:darken(0.15), e.fg, e.fg:lighten(0.15), e.fg:lighten(0.25) }
-  local cwd, hostname = fs.get_cwd_hostname(pane, true)
+  local cwd, hostname = tunpack(e.__per_pane(pane, "cwd", function()
+    return { fs.get_cwd_hostname(pane, true) }
+  end))
 
   --~ {{{2: battery cells
 
-  local battery = wt.battery_info()[1]
+  local battery = e.__battery_info()
   if battery then
     battery.charge_lvl = battery.state_of_charge * 100
     battery.charge_lvl_round = mt.toint(mt.mround(battery.charge_lvl, 10))
@@ -292,9 +364,20 @@ e.set_right_status = function(Config, window, pane)
     tinsert(sets, battery.cells)
   end
 
-  local cells = tbl.reverse(
-    e.__find_best_fit(tbl.cartesian(sets), e.width.usable, str.width(sep.sb.right), 5)
-  )
+  ---the best fit only changes with the cell texts and the usable width; keep the latest
+  local key = {}
+  for i = 1, #sets do
+    key[i] = table.concat(sets[i], "\31")
+  end
+  key = table.concat(key, "\30") .. "\30" .. e.width.usable
+
+  local cells = cache.best_fit[key]
+  if not cells then
+    cells = tbl.reverse(
+      e.__find_best_fit(tbl.cartesian(sets), e.width.usable, str.width(sep.sb.right), 5)
+    )
+    cache.best_fit = { [key] = cells }
+  end
 
   -- Render the best fit, ensuring correct colors
   for i = 1, #cells do
@@ -312,7 +395,7 @@ end -- }}}
 ---@param window wt.Window Wezterm's window object
 ---@param pane   wt.Pane   Wezterm's pane object
 wt.on("update-status", function(window, pane)
-  local Config, Overrides = window:effective_config(), window:get_config_overrides() or {}
+  local Config, Overrides = e.__effective_config(window)
   e.theme = Config.color_schemes[Overrides.color_scheme or Config.color_scheme]
   e.bg, e.fg = e.theme.background, e.theme.ansi[5]
 

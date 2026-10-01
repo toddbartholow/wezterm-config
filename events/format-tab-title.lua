@@ -11,6 +11,28 @@ local str = Utils.fn.str
 local Icon = Utils.class.icon
 local tabicons = Icon.Sep.tb
 
+---`pane.foreground_process_name` walks the pane's process tree on Windows (~20ms) once
+---wezterm's 300ms cache has expired, and this handler runs twice per tab on every title
+---change in any tab, so the name is remembered per pane for a little longer.
+local PROC_TTL = 2
+local procs = {}
+
+---Returns a view of `pane` whose `foreground_process_name` is reused for `PROC_TTL`
+---seconds; every other field reads through to `pane`.
+local function with_cached_proc(pane)
+  local now, hit = os.time(), procs[pane.pane_id]
+  if not (hit and now - hit.at < PROC_TTL) then
+    hit = { at = now, name = pane.foreground_process_name or "" }
+    procs[pane.pane_id] = hit
+  end
+
+  return setmetatable({ foreground_process_name = hit.name }, {
+    __index = function(_, key)
+      return pane[key]
+    end,
+  })
+end
+
 wt.on("format-tab-title", function(tab, _, _, config, hover, max_width)
   if config.use_fancy_tab_bar or not config.enable_tab_bar then
     return
@@ -46,7 +68,7 @@ wt.on("format-tab-title", function(tab, _, _, config, hover, max_width)
 
   local pane = tab.active_pane
   local tab_title = (tab.tab_title and #tab.tab_title > 0) and tab.tab_title or pane.title
-  local title = str.format_tab_title(pane, tab_title, config, max_width)
+  local title = str.format_tab_title(with_cached_proc(pane), tab_title, config, max_width)
 
   ---add the either the leftmost element or the normal left separator. This is done to
   ---esure a bit of space from the left margin.
